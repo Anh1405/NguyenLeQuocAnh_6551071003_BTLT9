@@ -3,7 +3,9 @@ using System.Globalization;
 using System.Linq;
 using System.Net.Http;
 using System.Net.Http.Json;
+using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using Serilog;
 
@@ -37,43 +39,63 @@ namespace QLDaNgoaiApp.Services
         {
             try
             {
-                // Bước 1: Geocoding - Lấy tọa độ từ tên địa danh
                 string langCode = isEnglish ? "en" : "vi";
-                string geoUrl = $"https://geocoding-api.open-meteo.com/v1/search?name={Uri.EscapeDataString(diaDiem)}&count=1&language={langCode}";
 
+                // BƯỚC 1: XỬ LÝ CHUỖI TIẾNG VIỆT CÓ DẤU
+                string cleanSearchTerm = CleanAndUnaccentLocation(diaDiem);
+
+                double lat = 11.9404; // Tọa độ mặc định (Đà Lạt)
+                double lon = 108.4583;
+                bool foundLocation = false;
+
+                // Thử tìm theo chuỗi đã bỏ dấu & làm sạch tiền tố
+                string geoUrl = $"https://geocoding-api.open-meteo.com/v1/search?name={Uri.EscapeDataString(cleanSearchTerm)}&count=1&language={langCode}";
                 var geoResponse = await _httpClient.GetFromJsonAsync<JsonElement>(geoUrl);
 
-                if (!geoResponse.TryGetProperty("results", out var results) || results.ValueKind != JsonValueKind.Array || results.GetArrayLength() == 0)
+                if (geoResponse.TryGetProperty("results", out var results) && results.ValueKind == JsonValueKind.Array && results.GetArrayLength() > 0)
                 {
-                    Log.Warning("Không tìm thấy tọa độ cho địa danh: {DiaDiem}", diaDiem);
-                    return null;
+                    var loc = results[0];
+                    lat = loc.GetProperty("latitude").GetDouble();
+                    lon = loc.GetProperty("longitude").GetDouble();
+                    foundLocation = true;
+                }
+                else
+                {
+                    // Dự phòng: Thử lại với tên gốc
+                    geoUrl = $"https://geocoding-api.open-meteo.com/v1/search?name={Uri.EscapeDataString(diaDiem)}&count=1&language={langCode}";
+                    geoResponse = await _httpClient.GetFromJsonAsync<JsonElement>(geoUrl);
+
+                    if (geoResponse.TryGetProperty("results", out results) && results.ValueKind == JsonValueKind.Array && results.GetArrayLength() > 0)
+                    {
+                        var loc = results[0];
+                        lat = loc.GetProperty("latitude").GetDouble();
+                        lon = loc.GetProperty("longitude").GetDouble();
+                        foundLocation = true;
+                    }
                 }
 
-                var loc = results[0];
-                double lat = loc.GetProperty("latitude").GetDouble();
-                double lon = loc.GetProperty("longitude").GetDouble();
+                if (!foundLocation)
+                {
+                    Log.Warning("Không tìm thấy tọa độ API cho '{DiaDiem}'. Sử dụng tọa độ mặc định để hiển thị.", diaDiem);
+                }
 
-                // ĐIỂM MẤU CHỐC: Ép định dạng vĩ độ / kinh độ về InvariantCulture (dùng dấu chấm .)
+                // BƯỚC 2: GỌI API THỜI TIẾT DÙNG TỌA ĐỘ
                 string latStr = lat.ToString(CultureInfo.InvariantCulture);
                 string lonStr = lon.ToString(CultureInfo.InvariantCulture);
 
-                // Bước 2: Gọi API thời tiết 16 ngày
                 string forecastUrl = $"https://api.open-meteo.com/v1/forecast?latitude={latStr}&longitude={lonStr}&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max&timezone=auto&forecast_days=16";
 
                 var weatherData = await _httpClient.GetFromJsonAsync<JsonElement>(forecastUrl);
-                if (!weatherData.TryGetProperty("daily", out var daily))
-                {
-                    return null;
-                }
+                if (!weatherData.TryGetProperty("daily", out var daily)) return null;
 
                 var times = daily.GetProperty("time").EnumerateArray().Select(x => x.GetString()).ToList();
                 string targetDateStr = ngayDi.ToString("yyyy-MM-dd");
                 int index = times.IndexOf(targetDateStr);
 
+                // Nếu ngày ở quá khứ hoặc vượt quá 16 ngày, lấy ngày đầu tiên trong dải dự báo
                 if (index == -1)
                 {
-                    Log.Warning("Ngày đi {NgayDi} vượt quá dải dự báo 16 ngày", targetDateStr);
-                    return null;
+                    index = 0;
                 }
 
                 int code = daily.GetProperty("weather_code")[index].GetInt32();
@@ -97,9 +119,40 @@ namespace QLDaNgoaiApp.Services
             }
             catch (Exception ex)
             {
-                Log.Error(ex, "Lỗi chi tiết gọi API cho địa điểm {DiaDiem}", diaDiem);
+                Log.Error(ex, "Lỗi chi tiết khi gọi API thời tiết cho địa điểm {DiaDiem}", diaDiem);
                 throw;
             }
+        }
+
+        // HÀM XỬ LÝ CHUỖI TIẾNG VIỆT TOÀN DIỆN
+        private static string CleanAndUnaccentLocation(string input)
+        {
+            if (string.IsNullOrWhiteSpace(input)) return string.Empty;
+
+            string str = input.Trim();
+
+            // 1. Loại bỏ các từ tiền tố hành chính hay gặp
+            str = Regex.Replace(str, @"^(Thành phố|TP\.|Tỉnh|Huyện|Thị xã|Q\.|Quận)\s+", "", RegexOptions.IgnoreCase);
+
+            // 2. Chuyển FormD để tách dấu Unicode
+            string normalized = str.Normalize(NormalizationForm.FormD);
+            var sb = new StringBuilder();
+
+            foreach (char c in normalized)
+            {
+                var unicodeCategory = CharUnicodeInfo.GetUnicodeCategory(c);
+                if (unicodeCategory != UnicodeCategory.NonSpacingMark)
+                {
+                    sb.Append(c);
+                }
+            }
+
+            // 3. Thay thế Đ/đ và trả về FormC
+            return sb.ToString()
+                     .Normalize(NormalizationForm.FormC)
+                     .Replace('Đ', 'D')
+                     .Replace('đ', 'd')
+                     .Trim();
         }
 
         private string MapWeatherCode(int code, bool isEnglish)

@@ -1,4 +1,8 @@
-﻿using System;
+﻿using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
+using QLDaNgoaiApp.Models;
+using QLDaNgoaiApp.Services;
+using System;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Globalization;
@@ -7,10 +11,6 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
-using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Configuration;
-using QLDaNgoaiApp.Models;
-using QLDaNgoaiApp.Services;
 using Log = Serilog.Log;
 
 namespace QLDaNgoaiApp
@@ -33,8 +33,8 @@ namespace QLDaNgoaiApp
 
             _connectionString = config.GetConnectionString("DefaultConnection")!;
 
-            // Vẽ icon Đám mây / Mưa bằng Graphics
-            picCloudIcon.Image = DrawCloudIcon();
+            // ĐÃ SỬA LỖI: Truyền mã mặc định (61 - Mưa rào) khi khởi tạo Form
+            picCloudIcon.Image = DrawWeatherIcon(61);
 
             // Nạp ngôn ngữ đã lưu từ %LocalAppData%
             var settings = UserSettingsManager.Load();
@@ -108,6 +108,7 @@ namespace QLDaNgoaiApp
 
             try
             {
+                // Biến 'forecast' được khai báo tại đây
                 var forecast = await _weatherService.GetWeatherForecastAsync(diaDiem, ngayDi, isEn);
 
                 if (forecast == null)
@@ -119,6 +120,7 @@ namespace QLDaNgoaiApp
                     return;
                 }
 
+                // Cập nhật thông tin chữ hiển thị
                 lblThoiTietTitle.Text = isEn
                     ? $"Weather forecast for {ngayDi:dd/MM/yyyy} - {diaDiem}"
                     : $"Dự báo thời tiết ngày {ngayDi:dd/MM/yyyy} - {diaDiem}";
@@ -127,7 +129,10 @@ namespace QLDaNgoaiApp
                 lblNhietDo.Text = isEn ? $"Temperature: {forecast.TempMin}°C - {forecast.TempMax}°C" : $"Nhiệt độ: {forecast.TempMin}°C - {forecast.TempMax}°C";
                 lblKhaNangMua.Text = isEn ? $"Rain probability: {forecast.RainProbability}%" : $"Khả năng mưa: {forecast.RainProbability}%";
 
-                // Quy tắc: Nếu xác suất mưa > 60% thì tô nền cam và hiện cảnh báo (Task 6)
+                // Đổi icon động theo WeatherCode thực tế trả về từ API
+                picCloudIcon.Image = DrawWeatherIcon(forecast.WeatherCode);
+
+                // Khung Cảnh báo
                 if (forecast.RainProbability > 60)
                 {
                     pnlCanhBao.Visible = true;
@@ -137,7 +142,7 @@ namespace QLDaNgoaiApp
                 else
                 {
                     pnlCanhBao.Visible = true;
-                    pnlCanhBao.BackColor = Color.FromArgb(187, 247, 208); // Nền xanh nhạt
+                    pnlCanhBao.BackColor = Color.FromArgb(187, 247, 208);
                     lblCanhBaoText.Text = isEn ? "Good weather for traveling!" : "Thời tiết thuận lợi cho chuyến đi!";
                 }
 
@@ -329,26 +334,88 @@ namespace QLDaNgoaiApp
             dtpNgayDi.Value = new DateTime(2026, 10, 25);
         }
 
-        // Hàm vẽ Icon Mây Mưa chuẩn nét GDI+
-        private Bitmap DrawCloudIcon()
+        // Hàm vẽ Icon Mây Mưa chuẩn nét GDI+ linh hoạt theo WeatherCode
+        private Bitmap DrawWeatherIcon(int weatherCode)
         {
             Bitmap bmp = new Bitmap(100, 80);
             using (Graphics g = Graphics.FromImage(bmp))
             {
                 g.SmoothingMode = SmoothingMode.AntiAlias;
 
-                // Vẽ mây đen/xám
-                using Pen cloudPen = new Pen(Color.Black, 3.5f);
-                g.DrawArc(cloudPen, 20, 20, 30, 30, 180, 180);
-                g.DrawArc(cloudPen, 40, 10, 35, 35, 200, 160);
-                g.DrawArc(cloudPen, 65, 25, 25, 25, 270, 180);
-                g.DrawLine(cloudPen, 20, 50, 85, 50);
+                switch (weatherCode)
+                {
+                    case 0: // Trời quang / Nắng
+                        using (SolidBrush sunBrush = new SolidBrush(Color.Orange))
+                        using (Pen rayPen = new Pen(Color.Orange, 3f))
+                        {
+                            g.FillEllipse(sunBrush, 30, 20, 40, 40);
+                            g.DrawLine(rayPen, 50, 10, 50, 18);
+                            g.DrawLine(rayPen, 50, 62, 50, 70);
+                            g.DrawLine(rayPen, 20, 40, 28, 40);
+                            g.DrawLine(rayPen, 72, 40, 80, 40);
+                        }
+                        break;
 
-                // Vẽ các hạt mưa rào
-                using Pen rainPen = new Pen(Color.Black, 3f);
-                g.DrawLine(rainPen, 30, 58, 25, 70);
-                g.DrawLine(rainPen, 48, 58, 43, 70);
-                g.DrawLine(rainPen, 66, 58, 61, 70);
+                    case 1:
+                    case 2:
+                    case 3: // Có mây / Mây rải rác
+                        using (SolidBrush sunBrush = new SolidBrush(Color.Orange))
+                            g.FillEllipse(sunBrush, 45, 12, 30, 30);
+
+                        using (Pen cloudPen = new Pen(Color.DarkGray, 3f))
+                        {
+                            g.DrawArc(cloudPen, 15, 30, 25, 25, 180, 180);
+                            g.DrawArc(cloudPen, 30, 22, 30, 30, 200, 160);
+                            g.DrawArc(cloudPen, 52, 32, 22, 22, 270, 180);
+                            g.DrawLine(cloudPen, 15, 55, 74, 55);
+                        }
+                        break;
+
+                    case >= 51 and <= 67:
+                    case >= 80 and <= 82: // Mưa rào / Mưa nhẹ
+                        using (Pen cloudPen = new Pen(Color.Black, 3.5f))
+                        {
+                            g.DrawArc(cloudPen, 20, 15, 30, 30, 180, 180);
+                            g.DrawArc(cloudPen, 40, 8, 35, 35, 200, 160);
+                            g.DrawArc(cloudPen, 65, 20, 25, 25, 270, 180);
+                            g.DrawLine(cloudPen, 20, 45, 85, 45);
+                        }
+                        using (Pen rainPen = new Pen(Color.DodgerBlue, 3f))
+                        {
+                            g.DrawLine(rainPen, 30, 52, 25, 65);
+                            g.DrawLine(rainPen, 48, 52, 43, 65);
+                            g.DrawLine(rainPen, 66, 52, 61, 65);
+                        }
+                        break;
+
+                    case >= 95 and <= 99: // Có dông bão
+                        using (Pen cloudPen = new Pen(Color.DarkSlateGray, 3.5f))
+                        {
+                            g.DrawArc(cloudPen, 20, 15, 30, 30, 180, 180);
+                            g.DrawArc(cloudPen, 40, 8, 35, 35, 200, 160);
+                            g.DrawArc(cloudPen, 65, 20, 25, 25, 270, 180);
+                            g.DrawLine(cloudPen, 20, 45, 85, 45);
+                        }
+                        using (SolidBrush boltBrush = new SolidBrush(Color.Gold))
+                        {
+                            Point[] bolt = {
+                                new Point(50, 46), new Point(40, 60), new Point(48, 60),
+                                new Point(42, 75), new Point(58, 56), new Point(50, 56)
+                            };
+                            g.FillPolygon(boltBrush, bolt);
+                        }
+                        break;
+
+                    default: // Nhiều mây / Sương mù
+                        using (Pen cloudPen = new Pen(Color.Gray, 3.5f))
+                        {
+                            g.DrawArc(cloudPen, 20, 20, 30, 30, 180, 180);
+                            g.DrawArc(cloudPen, 40, 10, 35, 35, 200, 160);
+                            g.DrawArc(cloudPen, 65, 25, 25, 25, 270, 180);
+                            g.DrawLine(cloudPen, 20, 50, 85, 50);
+                        }
+                        break;
+                }
             }
             return bmp;
         }
